@@ -1,28 +1,52 @@
+import logging
 import os
-import asyncio
-from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.filters import Command
-from aiogram.types import Message
+from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from bot.database.session import init_db
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is not set in .env")
+# Импорты проекта
+from .create_bot import bot, dp, ADMIN_ID
+from .routers import router
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
+BASE_URL = os.getenv("WEBHOOK_BASE_URL")
+HOST = os.getenv("WEBHOOK_HOST")
+PORT = int(os.getenv("WEBHOOK_PORT", 8000))
 
-storage = RedisStorage.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}/0")
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=storage)
+if not BASE_URL:
+    raise ValueError("WEBHOOK_BASE_URL is required")
 
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    await message.answer("Бот работает!")
+async def on_startup() -> None:
+    # Инициализация БД
+    await init_db()
+    logging.info("✅ Database tables initialized")
 
-async def main():
-    print("Запуск бота...")
-    await dp.start_polling(bot, drop_pending_updates=True)
+    await bot.set_webhook(f"{BASE_URL}{WEBHOOK_PATH}")
+    await bot.send_message(chat_id=ADMIN_ID, text="✅ Бот запущен!")
+
+
+async def on_shutdown() -> None:
+    await bot.send_message(chat_id=ADMIN_ID, text="🛑 Бот остановлен!")
+    await bot.delete_webhook(drop_pending_updates=True)
+
+
+def main() -> None:
+    dp.include_router(router)
+
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+
+    app = web.Application()
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_handler.register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+
+    web.run_app(app, host=HOST, port=PORT)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+    )
+    main()
